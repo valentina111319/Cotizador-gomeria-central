@@ -1,0 +1,80 @@
+name: Actualizar Catalogo Tiendanube
+
+on:
+  schedule:
+    - cron: '0 9 * * *'   # Todos los dias a las 6am Argentina (9am UTC)
+  workflow_dispatch:        # Tambien se puede ejecutar manualmente
+
+permissions:
+  contents: write
+
+jobs:
+  update-catalog:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Descargar catalogo desde Tiendanube
+        env:
+          TN_TOKEN: ${{ secrets.TN_TOKEN }}
+        run: |
+          python3 << 'PYEOF'
+          import requests, json, os, sys
+          from datetime import datetime, timezone
+
+          token    = os.environ['TN_TOKEN']
+          store_id = '5270629'
+          headers  = {
+              'Authentication': f'bearer {token}',
+              'User-Agent': 'CotizadorGomeriaCentral/1.0'
+          }
+
+          print(f'Conectando con Tiendanube (store {store_id})...')
+          products = []
+          page = 1
+
+          while True:
+              url  = f'https://api.tiendanube.com/v1/{store_id}/products?per_page=200&page={page}'
+              resp = requests.get(url, headers=headers, timeout=30)
+
+              if resp.status_code == 401:
+                  print('ERROR: Token invalido o sin permisos')
+                  sys.exit(1)
+              if resp.status_code != 200:
+                  print(f'ERROR {resp.status_code}: {resp.text[:300]}')
+                  sys.exit(1)
+
+              data = resp.json()
+              if not isinstance(data, list) or not data:
+                  break
+
+              products.extend(data)
+              print(f'  Pagina {page}: {len(data)} productos (total: {len(products)})')
+
+              if len(data) < 200:
+                  break
+              page += 1
+
+          # Agregar metadata de actualizacion
+          output = {
+              'updated_at': datetime.now(timezone.utc).isoformat(),
+              'total': len(products),
+              'products': products
+          }
+
+          with open('catalog.json', 'w', encoding='utf-8') as f:
+              json.dump(output, f, ensure_ascii=False, separators=(',', ':'))
+
+          print(f'Listo: {len(products)} productos guardados en catalog.json')
+          PYEOF
+
+      - name: Guardar cambios en el repositorio
+        run: |
+          git config user.name  "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add catalog.json
+          git diff --staged --quiet \
+            && echo "Sin cambios en el catalogo" \
+            || (git commit -m "Catalogo actualizado $(date -u '+%d/%m/%Y %H:%M') UTC" && git push)
